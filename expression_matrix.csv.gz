@@ -1,3 +1,76 @@
 Et forsøg på at loade de 100 første filer ind i en m (gene_id) x n (tpm_unstranded) matrix
 
 Større filer crasher...
+
+
+
+import os
+import pandas as pd
+from tqdm import tqdm
+
+# Path to all patient folders
+root_dir = "/work3/s214806/MBML Cancer Data/Genetic Expression/GDC Cancer MBML/"
+
+# Prepare containers
+expression_data = []
+patient_ids = []
+gene_index = None
+
+# Get list of patient folders
+patient_folders = [f for f in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, f))]
+patient_folders = patient_folders[:100]  # Load only first 500 patients
+
+print(f"Found {len(patient_folders)} patient folders")
+
+
+
+# Loop through patient folders efficiently
+for patient_id in tqdm(patient_folders):
+    patient_path = os.path.join(root_dir, patient_id)
+
+    try:
+        # Look for the .tsv file (assume only one per folder)
+        tsv_file = next(f for f in os.listdir(patient_path) if f.endswith(".tsv"))
+        tsv_path = os.path.join(patient_path, tsv_file)
+
+        # Read file (skip unnecessary header rows if needed)
+        df = pd.read_csv(tsv_path, sep='\t', skiprows=[0, 2, 3, 4, 5])
+
+        # Check columns
+        required_cols = {'gene_id', 'gene_name', 'tpm_unstranded'}
+        if not required_cols.issubset(df.columns):
+            continue
+
+        # Set or validate gene order
+        if gene_index is None:
+            gene_index = df['gene_id']
+        elif not df['gene_id'].equals(gene_index):
+            continue
+
+        # Add expression data
+        expression_data.append(df['tpm_unstranded'].values)
+        patient_ids.append(patient_id)
+
+    except (StopIteration, FileNotFoundError, pd.errors.ParserError) as e:
+        # Skip patients with issues
+        continue
+
+# Combine into a DataFrame once
+expression_matrix = pd.DataFrame(expression_data).T
+expression_matrix.index = gene_index
+expression_matrix.columns = patient_ids
+
+print(f"\n Final matrix shape: {expression_matrix.shape} (genes × patients)")
+
+
+
+
+# Save the final expression matrix to CSV
+output_path = "/work3/s214790/expression_matrix.csv"
+
+# Optional: Compress to save space (especially if it’s huge)
+# expression_matrix.to_csv(output_path, index=True)
+# Or compressed:
+expression_matrix.to_csv(output_path + ".gz", index=True, compression='gzip')
+
+print(f"Expression matrix saved to: {output_path}")
