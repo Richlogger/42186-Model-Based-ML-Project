@@ -13,7 +13,9 @@ import os
 LABEL_MAPPING = {'AML': 0, 'ALL': 1, 'Normal': 2}
 
 
-
+# Preprocessing the input data
+# This function loads the working_chunk.csv file, extracts covariates, labels, and gene expressions.
+# It also encodes categorical covariates into numerical values for use in the model.
 def preprocess_data(working_chunk_path):
     # Load the working chunk CSV file
     data = pd.read_csv(working_chunk_path, index_col=0, low_memory=False)
@@ -40,18 +42,21 @@ def preprocess_data(working_chunk_path):
     return torch.tensor(gene_expression.values, dtype=torch.float32), torch.tensor(covariates_encoded, dtype=torch.float32), torch.tensor(labels, dtype=torch.long)
 
 
+# Stick-breaking function to generate cluster weights
+# Uses a cumulative product to calculate weights from sampled beta distributions
 def stick_breaking(v):
-    # Stick-breaking construction to calculate cluster weights
     v_cumprod = torch.cumprod(1 - v, dim=0)
     weights = torch.cat([v[0:1], v[1:] * v_cumprod[:-1]])
     return weights
 
 
+# Define the hierarchical Dirichlet process model
+# The model defines the clusters and their distributions using a stick-breaking process.
+# Each sample is assigned to a cluster, which generates the gene expression data.
 def model(expressions, covariates, labels=None):
     num_genes = expressions.shape[1]
     num_samples = expressions.shape[0]
     num_clusters = 50
-    num_covariates = covariates.shape[1]
     num_classes = 3
 
     alpha = pyro.sample("alpha", dist.Gamma(2.0, 0.5))
@@ -69,18 +74,14 @@ def model(expressions, covariates, labels=None):
         expression_likelihood = dist.Normal(cluster_means[assignment], cluster_covs[assignment]).to_event(1)
         pyro.sample("obs", expression_likelihood, obs=expressions)
 
-        # Classification Layer
-        classifier = nn.Linear(num_covariates, num_classes)
-        logits = classifier(covariates)
-        class_probs = nn.Softmax(dim=-1)(logits)
 
-        if labels is not None:
-            pyro.sample("labels", dist.Categorical(logits=logits), obs=labels)
-
-
+# Define the guide for variational inference
+# This guide mirrors the model, defining variational distributions for all latent variables.
+# It includes variational parameters for the stick-breaking process and cluster distributions.
 def guide(expressions, covariates, labels=None):
     num_clusters = 50
     num_genes = expressions.shape[1]
+    num_samples = expressions.shape[0]
 
     alpha_q = pyro.param("alpha_q", torch.tensor(2.0), constraint=dist.constraints.positive)
     v_q = pyro.param("v_q", torch.ones(num_clusters) * 0.5, constraint=dist.constraints.unit_interval)
@@ -94,7 +95,15 @@ def guide(expressions, covariates, labels=None):
         pyro.sample("cluster_means", dist.Normal(cluster_means_q, 0.1).to_event(1))
         pyro.sample("cluster_covs", dist.LogNormal(cluster_covs_q, 0.1).to_event(1))
 
+    # Guide for assignment
+    assignment_logits = pyro.param("assignment_logits", torch.randn(num_samples, num_clusters))
+    with pyro.plate("data", num_samples):
+        pyro.sample("assignment", dist.Categorical(logits=assignment_logits))
 
+
+# Training function
+# Runs stochastic variational inference (SVI) for a specified number of epochs.
+# Prints the loss at regular intervals for monitoring progress.
 def train(working_chunk_path, num_epochs=100, lr=0.001):
     expressions, covariates, labels = preprocess_data(working_chunk_path)
 
@@ -110,6 +119,9 @@ def train(working_chunk_path, num_epochs=100, lr=0.001):
     print("Training complete.")
 
 
+# Evaluation function
+# Simple linear classifier to evaluate how well the covariates predict the labels.
+# Reports the accuracy as a performance measure.
 def evaluate(expressions, covariates, labels):
     classifier = nn.Linear(covariates.shape[1], 3)
     logits = classifier(covariates)
