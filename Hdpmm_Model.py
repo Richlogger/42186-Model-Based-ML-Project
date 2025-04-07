@@ -1,137 +1,96 @@
+import os
+import pandas as pd
+import numpy as np
 import torch
 import torch.nn as nn
 import pyro
 import pyro.distributions as dist
 from pyro.infer import SVI, Trace_ELBO
 from pyro.optim import Adam
-import pandas as pd
-import numpy as np
-import os
+from sklearn.metrics import accuracy_score
 
 
-# Define label mapping
 LABEL_MAPPING = {'AML': 0, 'ALL': 1, 'Normal': 2}
 
 
-# Preprocessing the input data
-# This function loads the working_chunk.csv file, extracts covariates, labels, and gene expressions.
-# It also encodes categorical covariates into numerical values for use in the model.
-def preprocess_data(working_chunk_path):
-    # Load the working chunk CSV file
-    data = pd.read_csv(working_chunk_path, index_col=0, low_memory=False)
+def load_data(train_path, val_path, test_path):
+    train_data = pd.read_csv(train_path, index_col=0)
+    val_data = pd.read_csv(val_path, index_col=0)
+    test_data = pd.read_csv(test_path, index_col=0)
 
-    # Extract sample names
-    sample_names = data.columns[6:]  # Assuming first 6 rows are metadata + labels
+    # Extract metadata
+    cancer_train = train_data.loc['Cancer'].map(LABEL_MAPPING)
+    cancer_val = val_data.loc['Cancer'].map(LABEL_MAPPING)
+    cancer_test = test_data.loc['Cancer'].map(LABEL_MAPPING)
 
-    # Extract covariates
-    covariates = data.iloc[0:4, 6:].T  # Transpose for easier handling
-    covariates.columns = ['Tissue Type', 'Tumor Descriptor', 'Specimen Type', 'Preservation Method']
-    covariates.index = sample_names
+    # Remove metadata rows
+    expressions_train = train_data.drop(['Cancer', 'Tissue Type', 'Tumor Descriptor', 'Specimen Type', 'Preservation Method'], axis=0)
+    expressions_val = val_data.drop(['Cancer', 'Tissue Type', 'Tumor Descriptor', 'Specimen Type', 'Preservation Method'], axis=0)
+    expressions_test = test_data.drop(['Cancer', 'Tissue Type', 'Tumor Descriptor', 'Specimen Type', 'Preservation Method'], axis=0)
 
-    # Convert categorical covariates to numeric codes
-    covariates_encoded = covariates.apply(lambda x: pd.factorize(x)[0]).values
-
-    # Extract cancer labels
-    labels = data.loc['Cancer', sample_names].map(LABEL_MAPPING).values
-
-    # Extract gene expression data
-    gene_expression = data.iloc[6:, 6:].astype(float).T
-    gene_expression.columns = data.iloc[6:, 0].values
-    gene_expression.index = sample_names
-
-    return torch.tensor(gene_expression.values, dtype=torch.float32), torch.tensor(covariates_encoded, dtype=torch.float32), torch.tensor(labels, dtype=torch.long)
+    return expressions_train, expressions_val, expressions_test, cancer_train, cancer_val, cancer_test
 
 
-# Stick-breaking function to generate cluster weights
-# Uses a cumulative product to calculate weights from sampled beta distributions
-def stick_breaking(v):
-    v_cumprod = torch.cumprod(1 - v, dim=0)
-    weights = torch.cat([v[0:1], v[1:] * v_cumprod[:-1]])
-    return weights
+def train(train_path, val_path, test_path, num_epochs=50, lr=0.001):
+    expressions_train, expressions_val, expressions_test, cancer_train, cancer_val, cancer_test = load_data(train_path, val_path, test_path)
 
+    # Convert data to PyTorch tensors
+    X_train = torch.tensor(expressions_train.values.T, dtype=torch.float32)
+    X_val = torch.tensor(expressions_val.values.T, dtype=torch.float32)
+    X_test = torch.tensor(expressions_test.values.T, dtype=torch.float32)
+    y_train = torch.tensor(cancer_train.values, dtype=torch.long)
+    y_val = torch.tensor(cancer_val.values, dtype=torch.long)
+    y_test = torch.tensor(cancer_test.values, dtype=torch.long)
 
-# Define the hierarchical Dirichlet process model
-# The model defines the clusters and their distributions using a stick-breaking process.
-# Each sample is assigned to a cluster, which generates the gene expression data.
-def model(expressions, covariates, labels=None):
-    num_genes = expressions.shape[1]
-    num_samples = expressions.shape[0]
     num_clusters = 50
-    num_classes = 3
+    num_genes = X_train.shape[1]
 
-    alpha = pyro.sample("alpha", dist.Gamma(2.0, 0.5))
+    def stick_breaking(v):
+        v_cumprod = torch.cumprod(1 - v, dim=0)
+        weights = torch.cat([v[0:1], v[1:] * v_cumprod[:-1]])
+        return weights
 
-    with pyro.plate("clusters", num_clusters):
-        v = pyro.sample("v", dist.Beta(torch.ones(num_clusters), alpha))
-        cluster_means = pyro.sample("cluster_means", dist.Normal(torch.zeros(num_genes), torch.ones(num_genes)).to_event(1))
-        cluster_covs = pyro.sample("cluster_covs", dist.LogNormal(torch.zeros(num_genes), torch.ones(num_genes)).to_event(1))
+    def model(X):
+        alpha = pyro.sample("alpha", dist.Gamma(1.0, 1.0))
+        with pyro.plate("clusters", num_clusters):
+            v = pyro.sample("v", dist.Beta(torch.ones(num_clusters), alpha))
+            cluster_means = pyro.sample("cluster_means", dist.Normal(0.0, 1.0).expand([num_genes]))
 
-    # Compute cluster weights using stick-breaking process
-    cluster_weights = stick_breaking(v)
+        theta = stick_breaking(v)
 
-    with pyro.plate("data", num_samples):
-        assignment = pyro.sample("assignment", dist.Categorical(cluster_weights))
-        expression_likelihood = dist.Normal(cluster_means[assignment], cluster_covs[assignment]).to_event(1)
-        pyro.sample("obs", expression_likelihood, obs=expressions)
+        with pyro.plate("data", X.shape[0]):
+            assignment = pyro.sample("assignment", dist.Categorical(theta))
+            pyro.sample("obs", dist.Normal(cluster_means[assignment], 0.1).to_event(1), obs=X)
 
+    def guide(X):
+        alpha_q = pyro.param("alpha_q", torch.tensor(1.0), constraint=dist.constraints.positive)
+        v_q = pyro.param("v_q", torch.ones(num_clusters), constraint=dist.constraints.unit_interval)
+        cluster_means_q = pyro.param("cluster_means_q", torch.randn(num_clusters, num_genes))
 
-# Define the guide for variational inference
-# This guide mirrors the model, defining variational distributions for all latent variables.
-# It includes variational parameters for the stick-breaking process and cluster distributions.
-def guide(expressions, covariates, labels=None):
-    num_clusters = 50
-    num_genes = expressions.shape[1]
-    num_samples = expressions.shape[0]
-
-    alpha_q = pyro.param("alpha_q", torch.tensor(2.0), constraint=dist.constraints.positive)
-    v_q = pyro.param("v_q", torch.ones(num_clusters) * 0.5, constraint=dist.constraints.unit_interval)
-
-    cluster_means_q = pyro.param("cluster_means_q", torch.randn(num_clusters, num_genes))
-    cluster_covs_q = pyro.param("cluster_covs_q", torch.ones(num_clusters, num_genes), constraint=dist.constraints.positive)
-
-    pyro.sample("alpha", dist.Gamma(alpha_q, 1.0))
-    with pyro.plate("clusters", num_clusters):
-        pyro.sample("v", dist.Beta(v_q, alpha_q))
-        pyro.sample("cluster_means", dist.Normal(cluster_means_q, 0.1).to_event(1))
-        pyro.sample("cluster_covs", dist.LogNormal(cluster_covs_q, 0.1).to_event(1))
-
-    # Guide for assignment
-    assignment_logits = pyro.param("assignment_logits", torch.randn(num_samples, num_clusters))
-    with pyro.plate("data", num_samples):
-        pyro.sample("assignment", dist.Categorical(logits=assignment_logits))
-
-
-# Training function
-# Runs stochastic variational inference (SVI) for a specified number of epochs.
-# Prints the loss at regular intervals for monitoring progress.
-def train(working_chunk_path, num_epochs=100, lr=0.001):
-    expressions, covariates, labels = preprocess_data(working_chunk_path)
+        pyro.sample("alpha", dist.Gamma(alpha_q, 1.0))
+        with pyro.plate("clusters", num_clusters):
+            pyro.sample("v", dist.Beta(v_q, torch.ones(num_clusters)))
+            pyro.sample("cluster_means", dist.Normal(cluster_means_q, 0.1))
 
     pyro.clear_param_store()
+
     optimizer = Adam({"lr": lr})
     svi = SVI(model, guide, optimizer, loss=Trace_ELBO())
 
     for epoch in range(num_epochs):
-        loss = svi.step(expressions, covariates, labels)
+        loss = svi.step(X_train)
         if epoch % 10 == 0:
             print(f"Epoch {epoch} - Loss: {loss}")
 
     print("Training complete.")
 
-
-# Evaluation function
-# Simple linear classifier to evaluate how well the covariates predict the labels.
-# Reports the accuracy as a performance measure.
-def evaluate(expressions, covariates, labels):
-    classifier = nn.Linear(covariates.shape[1], 3)
-    logits = classifier(covariates)
-    predictions = torch.argmax(logits, dim=-1)
-
-    accuracy = (predictions == labels).float().mean().item()
-    print(f"Evaluation Accuracy: {accuracy * 100:.2f}%")
+    val_loss = svi.evaluate_loss(X_val)
+    print(f"Validation Loss: {val_loss}")
 
 
 if __name__ == "__main__":
-    working_chunk_path = "/work3/s214806/working_chunk.csv"
-    train(working_chunk_path, num_epochs=50, lr=0.001)
+    train_path = "/work3/s214806/working_chunk_train.csv"
+    val_path = "/work3/s214806/working_chunk_val.csv"
+    test_path = "/work3/s214806/working_chunk_test.csv"
 
+    train(train_path, val_path, test_path)
