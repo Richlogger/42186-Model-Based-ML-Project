@@ -8,6 +8,7 @@ import pyro.distributions as dist
 from pyro.infer import SVI, Trace_ELBO
 from pyro.optim import Adam
 from sklearn.metrics import accuracy_score
+from sklearn.linear_model import LogisticRegression
 
 
 LABEL_MAPPING = {'AML': 0, 'ALL': 1, 'Normal': 2}
@@ -42,7 +43,14 @@ def train(train_path, val_path, test_path, num_epochs=50, lr=0.001):
     y_val = torch.tensor(cancer_val.values, dtype=torch.long)
     y_test = torch.tensor(cancer_test.values, dtype=torch.long)
 
-    num_clusters = 50
+    # Baseline Model Training (Logistic Regression)
+    baseline_model = LogisticRegression(max_iter=1000)
+    baseline_model.fit(expressions_train.T, cancer_train)
+    baseline_pred = baseline_model.predict(expressions_test.T)
+    baseline_accuracy = accuracy_score(cancer_test, baseline_pred)
+    print(f"Baseline Model Accuracy: {baseline_accuracy * 100:.2f}%")
+
+    num_clusters = 100
     num_genes = X_train.shape[1]
 
     def stick_breaking(v):
