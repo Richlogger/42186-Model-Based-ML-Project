@@ -67,7 +67,7 @@ def train(train_path, val_path, test_path, num_epochs=int(os.getenv('NUM_EPOCHS'
         alpha = pyro.sample("alpha", dist.Gamma(1.0, 1.0))
         with pyro.plate("clusters", num_clusters):
             v = pyro.sample("v", dist.Beta(torch.ones(num_clusters), alpha))
-            cluster_means = pyro.sample("cluster_means", dist.Normal(0.0, 1.0).expand([num_genes]))
+            cluster_means = pyro.sample("cluster_means", dist.Normal(0.0, 1.0).expand([num_genes]).to_event(1))
 
         theta = stick_breaking(v)
 
@@ -83,7 +83,7 @@ def train(train_path, val_path, test_path, num_epochs=int(os.getenv('NUM_EPOCHS'
         pyro.sample("alpha", dist.Gamma(alpha_q, 1.0))
         with pyro.plate("clusters", num_clusters):
             pyro.sample("v", dist.Beta(v_q, torch.ones(num_clusters)))
-            pyro.sample("cluster_means", dist.Normal(cluster_means_q, 0.1))
+            pyro.sample("cluster_means", dist.Normal(cluster_means_q, 0.1).to_event(1))
 
     pyro.clear_param_store()
 
