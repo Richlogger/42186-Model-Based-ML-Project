@@ -9,27 +9,35 @@ import numpy as np
 import os
 
 
+# Define label mapping
+LABEL_MAPPING = {'AML': 0, 'ALL': 1, 'Normal': 2}
+
+
+
 def preprocess_data(working_chunk_path):
     # Load the working chunk CSV file
     data = pd.read_csv(working_chunk_path, index_col=0)
 
     # Extract sample names
-    sample_names = data.columns[4:]  # Assuming first 4 rows are covariates
+    sample_names = data.columns[6:]  # Assuming first 6 rows are metadata + labels
 
     # Extract covariates
-    covariates = data.iloc[0:4, 4:].T  # Transpose for easier handling
+    covariates = data.iloc[0:4, 6:].T  # Transpose for easier handling
     covariates.columns = ["Tissue Type", "Tumor Descriptor", "Specimen Type", "Preservation Method"]
     covariates.index = sample_names
 
     # Convert categorical covariates to numeric codes
     covariates_encoded = covariates.apply(lambda x: pd.factorize(x)[0]).values
 
+    # Extract cancer labels
+    labels = data.loc['Cancer', sample_names].map(LABEL_MAPPING).values  # Now using the 'Cancer' row label directly
+
     # Extract gene expression data
-    gene_expression = data.iloc[4:, 4:].astype(float).T
-    gene_expression.columns = data.iloc[4:, 0].values  # Set gene IDs as column names
+    gene_expression = data.iloc[6:, 6:].astype(float).T
+    gene_expression.columns = data.iloc[6:, 0].values  # Set gene IDs as column names
     gene_expression.index = sample_names
 
-    return torch.tensor(gene_expression.values, dtype=torch.float32), torch.tensor(covariates_encoded, dtype=torch.float32)
+    return torch.tensor(gene_expression.values, dtype=torch.float32), torch.tensor(covariates_encoded, dtype=torch.float32), torch.tensor(labels, dtype=torch.long)
 
 
 def model(expressions, covariates, labels=None):
@@ -88,8 +96,7 @@ def guide(expressions, covariates, labels=None):
 
 
 def train(working_chunk_path, num_epochs=100, lr=0.001):
-    expressions, covariates = preprocess_data(working_chunk_path)
-    labels = None  # Placeholder for now
+    expressions, covariates, labels = preprocess_data(working_chunk_path)
 
     pyro.clear_param_store()
     optimizer = Adam({"lr": lr})
