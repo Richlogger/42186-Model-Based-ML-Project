@@ -39,7 +39,6 @@ def preprocess_data(working_chunk_path):
 
     return torch.tensor(gene_expression.values, dtype=torch.float32), torch.tensor(covariates_encoded, dtype=torch.float32), torch.tensor(labels, dtype=torch.long)
 
-
 def model(expressions, covariates, labels=None):
     # Define hyperparameters
     num_genes = expressions.shape[1]
@@ -52,16 +51,15 @@ def model(expressions, covariates, labels=None):
     v = pyro.sample("v", dist.Beta(torch.ones(num_clusters), alpha).expand([num_clusters]))
 
     # Stick-breaking construction to generate cluster weights
-    with torch.no_grad():
-        stick_segments = torch.cat([v, torch.tensor([1.0])])
-        stick_weights = stick_segments[:-1] * torch.cumprod(1 - stick_segments[:-1], dim=0)
-
+    stick_segments = torch.cat([v, torch.tensor([1.0])])
+    stick_weights = stick_segments[:-1] * torch.cumprod(1 - stick_segments[:-1], dim=0)
     theta = pyro.sample("theta", dist.Delta(stick_weights))
 
     # Middle Layer: Dirichlet Process Mixture Model (DPMM)
     with pyro.plate("clusters", num_clusters):
-        cluster_means = pyro.sample("cluster_means", dist.Normal(torch.zeros(num_genes), torch.ones(num_genes)))
-        cluster_covs = pyro.sample("cluster_covs", dist.LogNormal(torch.zeros(num_genes), torch.ones(num_genes)))
+        # Now we generate per-gene means and covariances
+        cluster_means = pyro.sample("cluster_means", dist.Normal(torch.zeros(num_genes), torch.ones(num_genes)).to_event(1))
+        cluster_covs = pyro.sample("cluster_covs", dist.LogNormal(torch.zeros(num_genes), torch.ones(num_genes)).to_event(1))
 
     # Observation Layer
     with pyro.plate("data", len(expressions)):
@@ -70,7 +68,8 @@ def model(expressions, covariates, labels=None):
         pyro.sample("obs", expression_likelihood, obs=expressions)
 
     # Classification Layer
-    logits = nn.Linear(num_covariates, num_classes)(covariates)
+    classifier = nn.Linear(num_covariates, num_classes)
+    logits = classifier(covariates)
     class_probs = nn.Softmax(dim=-1)(logits)
 
     if labels is not None:
@@ -84,6 +83,7 @@ def guide(expressions, covariates, labels=None):
     alpha_q = pyro.param("alpha_q", torch.tensor(2.0), constraint=dist.constraints.positive)
     v_q = pyro.param("v_q", torch.ones(num_clusters) * 0.5, constraint=dist.constraints.unit_interval)
 
+    # Adjusted parameter shapes to fit the model's expectations
     cluster_means_q = pyro.param("cluster_means_q", torch.randn(num_clusters, num_genes))
     cluster_covs_q = pyro.param("cluster_covs_q", torch.ones(num_clusters, num_genes), constraint=dist.constraints.positive)
 
@@ -91,8 +91,10 @@ def guide(expressions, covariates, labels=None):
     pyro.sample("v", dist.Beta(v_q, alpha_q).expand([num_clusters]))
 
     with pyro.plate("clusters", num_clusters):
-        pyro.sample("cluster_means", dist.Normal(cluster_means_q, 0.1))
-        pyro.sample("cluster_covs", dist.LogNormal(cluster_covs_q, 0.1))
+        # Generate cluster means and covariances for each gene
+        pyro.sample("cluster_means", dist.Normal(cluster_means_q, 0.1).to_event(1))
+        pyro.sample("cluster_covs", dist.LogNormal(cluster_covs_q, 0.1).to_event(1))
+
 
 
 def train(working_chunk_path, num_epochs=100, lr=0.001):
