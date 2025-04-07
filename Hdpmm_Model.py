@@ -32,7 +32,7 @@ def load_data(train_path, val_path, test_path):
     return expressions_train, expressions_val, expressions_test, cancer_train, cancer_val, cancer_test
 
 
-def train(train_path, val_path, test_path, num_epochs=50, lr=0.001):
+def train(train_path, val_path, test_path, num_epochs=int(os.getenv('NUM_EPOCHS', 100)), lr=0.001):
     expressions_train, expressions_val, expressions_test, cancer_train, cancer_val, cancer_test = load_data(train_path, val_path, test_path)
 
     # Convert data to PyTorch tensors
@@ -50,7 +50,7 @@ def train(train_path, val_path, test_path, num_epochs=50, lr=0.001):
     baseline_accuracy = accuracy_score(cancer_test, baseline_pred)
     print(f"Baseline Model Accuracy: {baseline_accuracy * 100:.2f}%")
 
-    num_clusters = 100
+    num_clusters = 50
     num_genes = X_train.shape[1]
 
     def stick_breaking(v):
