@@ -55,7 +55,7 @@ def train(train_path, val_path, test_path, num_epochs=int(os.getenv('NUM_EPOCHS'
     baseline_accuracy = accuracy_score(cancer_test, baseline_pred)
     print(f"Baseline Model Accuracy: {baseline_accuracy * 100:.2f}%")
 
-    num_clusters = 200  # Increased number of clusters for better modeling of complex data
+    num_clusters = 300  # Increased number of clusters for better modeling of complex data
     num_genes = X_train.shape[1]
 
     def stick_breaking(v):
@@ -76,29 +76,24 @@ def train(train_path, val_path, test_path, num_epochs=int(os.getenv('NUM_EPOCHS'
             pyro.sample("obs", dist.Normal(cluster_means[assignment], 0.1).to_event(1), obs=X)
 
     def guide(X):
-    alpha_q = pyro.param("alpha_q", torch.tensor(1.0), constraint=dist.constraints.positive)
-    v_q = pyro.param("v_q", torch.ones(num_clusters), constraint=dist.constraints.unit_interval)
-    from sklearn.cluster import KMeans
+        alpha_q = pyro.param("alpha_q", torch.tensor(1.0), constraint=dist.constraints.positive)
+        v_q = pyro.param("v_q", torch.ones(num_clusters), constraint=dist.constraints.unit_interval)
+        from sklearn.cluster import KMeans
 
-    # Initialize cluster_means_q using K-Means
-    kmeans = KMeans(n_clusters=num_clusters, random_state=0).fit(X_train.detach().numpy())
-    cluster_means_init = torch.tensor(kmeans.cluster_centers_, dtype=torch.float32)
-    cluster_means_q = pyro.param("cluster_means_q", cluster_means_init)
-
-    pyro.sample("alpha", dist.Gamma(alpha_q, 1.0))
-    with pyro.plate("clusters", num_clusters):
-        pyro.sample("v", dist.Beta(v_q, torch.ones(num_clusters)))
-        pyro.sample("cluster_means", dist.Normal(cluster_means_q, 0.1).to_event(1))
-
-    # Guide for assignment
-    assignment_logits = pyro.param("assignment_logits", torch.randn(X.shape[0], num_clusters))
-    with pyro.plate("data", X.shape[0]):
-        pyro.sample("assignment", dist.Categorical(logits=assignment_logits))
+        # Initialize cluster_means_q using K-Means
+        kmeans = KMeans(n_clusters=num_clusters, random_state=0).fit(X.detach().numpy())
+        cluster_means_init = torch.tensor(kmeans.cluster_centers_, dtype=torch.float32)
+        cluster_means_q = pyro.param("cluster_means_q", cluster_means_init)
 
         pyro.sample("alpha", dist.Gamma(alpha_q, 1.0))
         with pyro.plate("clusters", num_clusters):
             pyro.sample("v", dist.Beta(v_q, torch.ones(num_clusters)))
             pyro.sample("cluster_means", dist.Normal(cluster_means_q, 0.1).to_event(1))
+
+        # Guide for assignment
+        assignment_logits = pyro.param("assignment_logits", torch.randn(X.shape[0], num_clusters))
+        with pyro.plate("data", X.shape[0]):
+            pyro.sample("assignment", dist.Categorical(logits=assignment_logits))
 
     pyro.clear_param_store()
 
@@ -122,3 +117,4 @@ if __name__ == "__main__":
     test_path = "/work3/s214806/working_chunk_test.csv"
 
     train(train_path, val_path, test_path)
+
