@@ -13,7 +13,6 @@ import os
 LABEL_MAPPING = {'AML': 0, 'ALL': 1, 'Normal': 2}
 
 
-
 def preprocess_data(working_chunk_path):
     # Load the working chunk CSV file
     data = pd.read_csv(working_chunk_path, index_col=0, low_memory=False)
@@ -30,14 +29,15 @@ def preprocess_data(working_chunk_path):
     covariates_encoded = covariates.apply(lambda x: pd.factorize(x)[0]).values
 
     # Extract cancer labels
-    labels = data.loc['Cancer', sample_names].map(LABEL_MAPPING).values  # Now using the 'Cancer' row label directly
+    labels = data.loc['Cancer', sample_names].map(LABEL_MAPPING).values
 
     # Extract gene expression data
     gene_expression = data.iloc[6:, 6:].astype(float).T
-    gene_expression.columns = data.iloc[6:, 0].values  # Set gene IDs as column names
+    gene_expression.columns = data.iloc[6:, 0].values
     gene_expression.index = sample_names
 
     return torch.tensor(gene_expression.values, dtype=torch.float32), torch.tensor(covariates_encoded, dtype=torch.float32), torch.tensor(labels, dtype=torch.long)
+
 
 def model(expressions, covariates, labels=None):
     # Define hyperparameters
@@ -46,24 +46,24 @@ def model(expressions, covariates, labels=None):
     num_covariates = covariates.shape[1]
     num_classes = 3
 
-    # Top Layer: Stick-breaking process for clusters
+    # Stick-breaking process for clusters
     alpha = pyro.sample("alpha", dist.Gamma(2.0, 0.5))
-    v = pyro.sample("v", dist.Beta(torch.ones(num_clusters), alpha).to_event(1))  # Fix applied here
+    with pyro.plate("clusters", num_clusters):
+        v = pyro.sample("v", dist.Beta(torch.ones(num_clusters), alpha))
 
     # Stick-breaking construction to generate cluster weights
     stick_segments = torch.cat([v, torch.tensor([1.0])])
     stick_weights = stick_segments[:-1] * torch.cumprod(1 - stick_segments[:-1], dim=0)
-
-    theta = pyro.sample("theta", dist.Delta(stick_weights))
+    stick_weights = stick_weights / stick_weights.sum()
 
     # Middle Layer: Dirichlet Process Mixture Model (DPMM)
     with pyro.plate("clusters", num_clusters):
-        cluster_means = pyro.sample("cluster_means", dist.Normal(torch.zeros(num_genes), torch.ones(num_genes)).to_event(1))
-        cluster_covs = pyro.sample("cluster_covs", dist.LogNormal(torch.zeros(num_genes), torch.ones(num_genes)).to_event(1))
+        cluster_means = pyro.sample("cluster_means", dist.Normal(torch.zeros(num_genes), torch.ones(num_genes)))
+        cluster_covs = pyro.sample("cluster_covs", dist.LogNormal(torch.zeros(num_genes), torch.ones(num_genes)))
 
     # Observation Layer
     with pyro.plate("data", len(expressions)):
-        assignment = pyro.sample("assignment", dist.Categorical(theta))
+        assignment = pyro.sample("assignment", dist.Categorical(stick_weights))
         expression_likelihood = dist.Normal(cluster_means[assignment], cluster_covs[assignment]).to_event(1)
         pyro.sample("obs", expression_likelihood, obs=expressions)
 
@@ -74,6 +74,7 @@ def model(expressions, covariates, labels=None):
 
     if labels is not None:
         pyro.sample("labels", dist.Categorical(class_probs), obs=labels)
+
 
 def guide(expressions, covariates, labels=None):
     num_clusters = 50
@@ -86,21 +87,10 @@ def guide(expressions, covariates, labels=None):
     cluster_covs_q = pyro.param("cluster_covs_q", torch.ones(num_clusters, num_genes), constraint=dist.constraints.positive)
 
     pyro.sample("alpha", dist.Gamma(alpha_q, 1.0))
-    pyro.sample("v", dist.Beta(v_q, alpha_q).to_event(1))  # Fix applied here
-
     with pyro.plate("clusters", num_clusters):
-        pyro.sample("cluster_means", dist.Normal(cluster_means_q, 0.1).to_event(1))
-        pyro.sample("cluster_covs", dist.LogNormal(cluster_covs_q, 0.1).to_event(1))
-
-    # Adding theta and assignment to the guide
-    theta_q = pyro.param("theta_q", torch.ones(num_clusters) / num_clusters, constraint=dist.constraints.simplex)
-    pyro.sample("theta", dist.Delta(theta_q))
-
-    with pyro.plate("data", len(expressions)):
-        assignment_q = pyro.param("assignment_q", torch.ones(len(expressions), num_clusters) / num_clusters,
-                                  constraint=dist.constraints.simplex)
-        pyro.sample("assignment", dist.Categorical(assignment_q))
-
+        pyro.sample("v", dist.Beta(v_q, alpha_q))
+        pyro.sample("cluster_means", dist.Normal(cluster_means_q, 0.1))
+        pyro.sample("cluster_covs", dist.LogNormal(cluster_covs_q, 0.1))
 
 
 def train(working_chunk_path, num_epochs=100, lr=0.001):
@@ -116,6 +106,15 @@ def train(working_chunk_path, num_epochs=100, lr=0.001):
             print(f"Epoch {epoch} - Loss: {loss}")
 
     print("Training complete.")
+
+
+def evaluate(expressions, covariates, labels):
+    classifier = nn.Linear(covariates.shape[1], 3)
+    logits = classifier(covariates)
+    predictions = torch.argmax(logits, dim=-1)
+
+    accuracy = (predictions == labels).float().mean().item()
+    print(f"Evaluation Accuracy: {accuracy * 100:.2f}%")
 
 
 if __name__ == "__main__":
