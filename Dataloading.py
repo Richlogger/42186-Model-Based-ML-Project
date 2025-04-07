@@ -7,12 +7,15 @@ sample_sheet_path = "/work3/s214806/MBML Cancer Data/Genetic Expression/gdc_samp
 output_dir = "/work3/s214806/chunked_results/"  # Directory to store intermediate chunks
 os.makedirs(output_dir, exist_ok=True)
 
+
 # Load sample metadata
+
 def load_sample_metadata(sample_sheet_path):
     metadata = pd.read_csv(sample_sheet_path, sep='\t')
-    metadata = metadata[['File ID', 'Tissue Type', 'Tumor Descriptor', 'Specimen Type', 'Preservation Method']]
+    metadata = metadata[['File ID', 'Tissue Type', 'Tumor Descriptor', 'Specimen Type', 'Preservation Method', 'Cancer']]
     metadata.set_index('File ID', inplace=True)
     return metadata
+
 
 metadata = load_sample_metadata(sample_sheet_path)
 
@@ -23,11 +26,15 @@ files_loaded = 0  # Counter for progress tracking
 chunk_size = 500  # Number of files to process per chunk
 chunk_number = 1
 
-# Iterate over folders to collect data
+
+# Helper function to print progress
+
 def print_progress(files_loaded):
     if files_loaded % 100 == 0:
         print(f"Loaded {files_loaded} files so far")
 
+
+# Iterate over folders to collect data
 for root, dirs, files in os.walk(root_dir):
     for file in files:
         if file.endswith(".tsv"):
@@ -70,6 +77,7 @@ for root, dirs, files in os.walk(root_dir):
                 print(f"Error reading {file_id}: {e}")
                 continue
 
+
 # Save remaining files in the last chunk
 if expression_data:
     expression_matrix = pd.DataFrame.from_dict(expression_data, orient='columns')
@@ -79,5 +87,6 @@ if expression_data:
     chunk_path = os.path.join(output_dir, f"chunk_{chunk_number}.csv")
     final_matrix.to_csv(chunk_path)
     print(f"Finished and saved final chunk {chunk_number} with {len(expression_data)} files")
+
 
 print("All files have been processed and saved in chunks.")

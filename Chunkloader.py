@@ -9,25 +9,28 @@ def load_chunks(output_dir):
     """
     chunk_files = [f for f in os.listdir(output_dir) if f.startswith('chunk_') and f.endswith('.csv')]
     all_samples = []
+    cancer_info = {}
 
     for chunk_file in chunk_files:
         chunk_path = os.path.join(output_dir, chunk_file)
         try:
             # Read the chunk file with improved settings
-            chunk_df = pd.read_csv(chunk_path, dtype=str, low_memory=False)
-            print(f"Columns found in {chunk_file}: {list(chunk_df.columns)}")  # Debugging print
-            
-            # Remove metadata rows if present
+            chunk_df = pd.read_csv(chunk_path, dtype=str, low_memory=False, index_col=0)
+
+            # Collect the "Cancer" row (if present) and add to cancer_info
+            if 'Cancer' in chunk_df.index:
+                cancer_info.update(chunk_df.loc['Cancer'].to_dict())
+
+            # Remove metadata rows
             non_metadata_columns = [col for col in chunk_df.columns if not any(
-                keyword in col.lower() for keyword in ['gene_id', 'tissue type', 'tumor descriptor', 'specimen type', 'preservation method'])]
-            
+                keyword in col.lower() for keyword in ['gene_id', 'tissue type', 'tumor descriptor', 'specimen type', 'preservation method', 'cancer'])]
+
             sample_ids = non_metadata_columns
             all_samples.extend(sample_ids)
             print(f"Loaded chunk: {chunk_file} with {len(sample_ids)} samples")
         except Exception as e:
             print(f"Error loading chunk {chunk_file}: {e}")
-    return all_samples, chunk_files
-
+    return all_samples, chunk_files, cancer_info
 
 
 def select_samples(all_samples, num_samples):
@@ -67,7 +70,7 @@ if __name__ == "__main__":
     num_samples = 500  # Number of samples to randomly select
 
     # Load chunks and gather samples
-    all_samples, chunk_files = load_chunks(output_dir)
+    all_samples, chunk_files, cancer_info = load_chunks(output_dir)
 
     # Select random samples
     selected_samples = select_samples(all_samples, num_samples)
