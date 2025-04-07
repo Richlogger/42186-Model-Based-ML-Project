@@ -16,7 +16,7 @@ LABEL_MAPPING = {'AML': 0, 'ALL': 1, 'Normal': 2}
 
 def preprocess_data(working_chunk_path):
     # Load the working chunk CSV file
-    data = pd.read_csv(working_chunk_path, index_col=0)
+    data = pd.read_csv(working_chunk_path, index_col=0, low_memory=False)
 
     # Extract sample names
     sample_names = data.columns[6:]  # Assuming first 6 rows are metadata + labels
@@ -48,16 +48,16 @@ def model(expressions, covariates, labels=None):
 
     # Top Layer: Stick-breaking process for clusters
     alpha = pyro.sample("alpha", dist.Gamma(2.0, 0.5))
-    v = pyro.sample("v", dist.Beta(torch.ones(num_clusters), alpha).expand([num_clusters]))
+    v = pyro.sample("v", dist.Beta(torch.ones(num_clusters), alpha).to_event(1))  # Fix applied here
 
     # Stick-breaking construction to generate cluster weights
     stick_segments = torch.cat([v, torch.tensor([1.0])])
     stick_weights = stick_segments[:-1] * torch.cumprod(1 - stick_segments[:-1], dim=0)
+
     theta = pyro.sample("theta", dist.Delta(stick_weights))
 
     # Middle Layer: Dirichlet Process Mixture Model (DPMM)
     with pyro.plate("clusters", num_clusters):
-        # Now we generate per-gene means and covariances
         cluster_means = pyro.sample("cluster_means", dist.Normal(torch.zeros(num_genes), torch.ones(num_genes)).to_event(1))
         cluster_covs = pyro.sample("cluster_covs", dist.LogNormal(torch.zeros(num_genes), torch.ones(num_genes)).to_event(1))
 
@@ -75,7 +75,6 @@ def model(expressions, covariates, labels=None):
     if labels is not None:
         pyro.sample("labels", dist.Categorical(class_probs), obs=labels)
 
-
 def guide(expressions, covariates, labels=None):
     num_clusters = 50
     num_genes = expressions.shape[1]
@@ -83,17 +82,24 @@ def guide(expressions, covariates, labels=None):
     alpha_q = pyro.param("alpha_q", torch.tensor(2.0), constraint=dist.constraints.positive)
     v_q = pyro.param("v_q", torch.ones(num_clusters) * 0.5, constraint=dist.constraints.unit_interval)
 
-    # Adjusted parameter shapes to fit the model's expectations
     cluster_means_q = pyro.param("cluster_means_q", torch.randn(num_clusters, num_genes))
     cluster_covs_q = pyro.param("cluster_covs_q", torch.ones(num_clusters, num_genes), constraint=dist.constraints.positive)
 
     pyro.sample("alpha", dist.Gamma(alpha_q, 1.0))
-    pyro.sample("v", dist.Beta(v_q, alpha_q).expand([num_clusters]))
+    pyro.sample("v", dist.Beta(v_q, alpha_q).to_event(1))  # Fix applied here
 
     with pyro.plate("clusters", num_clusters):
-        # Generate cluster means and covariances for each gene
         pyro.sample("cluster_means", dist.Normal(cluster_means_q, 0.1).to_event(1))
         pyro.sample("cluster_covs", dist.LogNormal(cluster_covs_q, 0.1).to_event(1))
+
+    # Adding theta and assignment to the guide
+    theta_q = pyro.param("theta_q", torch.ones(num_clusters) / num_clusters, constraint=dist.constraints.simplex)
+    pyro.sample("theta", dist.Delta(theta_q))
+
+    with pyro.plate("data", len(expressions)):
+        assignment_q = pyro.param("assignment_q", torch.ones(len(expressions), num_clusters) / num_clusters,
+                                  constraint=dist.constraints.simplex)
+        pyro.sample("assignment", dist.Categorical(assignment_q))
 
 
 
