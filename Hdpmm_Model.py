@@ -15,9 +15,9 @@ LABEL_MAPPING = {'AML': 0, 'ALL': 1, 'Normal': 2}
 
 
 def load_data(train_path, val_path, test_path):
-    train_data = pd.read_csv(train_path, index_col=0)
-    val_data = pd.read_csv(val_path, index_col=0)
-    test_data = pd.read_csv(test_path, index_col=0)
+    train_data = pd.read_csv(train_path, index_col=0, low_memory=False)
+    val_data = pd.read_csv(val_path, index_col=0, low_memory=False)
+    test_data = pd.read_csv(test_path, index_col=0, low_memory=False)
 
     # Extract metadata
     cancer_train = train_data.loc['Cancer'].map(LABEL_MAPPING)
@@ -25,9 +25,14 @@ def load_data(train_path, val_path, test_path):
     cancer_test = test_data.loc['Cancer'].map(LABEL_MAPPING)
 
     # Remove metadata rows
-    expressions_train = train_data.drop(['Cancer', 'Tissue Type', 'Tumor Descriptor', 'Specimen Type', 'Preservation Method'], axis=0)
-    expressions_val = val_data.drop(['Cancer', 'Tissue Type', 'Tumor Descriptor', 'Specimen Type', 'Preservation Method'], axis=0)
-    expressions_test = test_data.drop(['Cancer', 'Tissue Type', 'Tumor Descriptor', 'Specimen Type', 'Preservation Method'], axis=0)
+    expressions_train = train_data.drop(['Cancer', 'Tissue Type', 'Tumor Descriptor', 'Specimen Type', 'Preservation Method'], axis=0, errors='ignore')
+    expressions_val = val_data.drop(['Cancer', 'Tissue Type', 'Tumor Descriptor', 'Specimen Type', 'Preservation Method'], axis=0, errors='ignore')
+    expressions_test = test_data.drop(['Cancer', 'Tissue Type', 'Tumor Descriptor', 'Specimen Type', 'Preservation Method'], axis=0, errors='ignore')
+
+    # Convert expressions to numeric, setting errors='coerce' to handle non-numeric data
+    expressions_train = expressions_train.apply(pd.to_numeric, errors='coerce').fillna(0)
+    expressions_val = expressions_val.apply(pd.to_numeric, errors='coerce').fillna(0)
+    expressions_test = expressions_test.apply(pd.to_numeric, errors='coerce').fillna(0)
 
     return expressions_train, expressions_val, expressions_test, cancer_train, cancer_val, cancer_test
 
