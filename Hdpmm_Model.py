@@ -40,6 +40,13 @@ def preprocess_data(working_chunk_path):
     return torch.tensor(gene_expression.values, dtype=torch.float32), torch.tensor(covariates_encoded, dtype=torch.float32), torch.tensor(labels, dtype=torch.long)
 
 
+def stick_breaking(v):
+    # Stick-breaking construction to calculate cluster weights
+    v_cumprod = torch.cumprod(1 - v, dim=0)
+    weights = torch.cat([v[0:1], v[1:] * v_cumprod[:-1]])
+    return weights
+
+
 def model(expressions, covariates, labels=None):
     num_genes = expressions.shape[1]
     num_samples = expressions.shape[0]
@@ -54,8 +61,8 @@ def model(expressions, covariates, labels=None):
         cluster_means = pyro.sample("cluster_means", dist.Normal(torch.zeros(num_genes), torch.ones(num_genes)).to_event(1))
         cluster_covs = pyro.sample("cluster_covs", dist.LogNormal(torch.zeros(num_genes), torch.ones(num_genes)).to_event(1))
 
-    # Stick-breaking construction
-    cluster_weights = pyro.sample("cluster_weights", dist.Delta(v / v.sum()))
+    # Compute cluster weights using stick-breaking process
+    cluster_weights = stick_breaking(v)
 
     with pyro.plate("data", num_samples):
         assignment = pyro.sample("assignment", dist.Categorical(cluster_weights))
@@ -115,3 +122,4 @@ def evaluate(expressions, covariates, labels):
 if __name__ == "__main__":
     working_chunk_path = "/work3/s214806/working_chunk.csv"
     train(working_chunk_path, num_epochs=50, lr=0.001)
+
