@@ -4,8 +4,8 @@ import pandas as pd
 # Paths
 root_dir = "/work3/s214806/MBML Cancer Data/Genetic Expression/GDC Cancer MBML/"
 sample_sheet_path = "/work3/s214806/MBML Cancer Data/Genetic Expression/gdc_sample_sheet.2025-04-03.tsv"
-#output_path = "/work3/s214806/expression_matrix_test.csv"
-output_path = "/work3/s214806/expression_matrix.csv"
+output_dir = "/work3/s214806/chunked_results/"  # Directory to store intermediate chunks
+os.makedirs(output_dir, exist_ok=True)
 
 # Load sample metadata
 def load_sample_metadata(sample_sheet_path):
@@ -20,7 +20,8 @@ metadata = load_sample_metadata(sample_sheet_path)
 expression_data = {}
 gene_ids = None
 files_loaded = 0  # Counter for progress tracking
-max_files = 200  # Limiting the number of files to load
+chunk_size = 500  # Number of files to process per chunk
+chunk_number = 1
 
 # Iterate over folders to collect data
 def print_progress(files_loaded):
@@ -30,8 +31,6 @@ def print_progress(files_loaded):
 for root, dirs, files in os.walk(root_dir):
     for file in files:
         if file.endswith(".tsv"):
-            if files_loaded >= max_files:
-                break
             file_id = os.path.basename(root)
             try:
                 # Read the TSV file
@@ -47,22 +46,38 @@ for root, dirs, files in os.walk(root_dir):
                 expression_data[file_id] = df['tpm_unstranded'].values
 
                 files_loaded += 1
-                print_progress(files_loaded)  # Print progress every 100 files loaded
+                print_progress(files_loaded)
+
+                # Process a chunk
+                if files_loaded % chunk_size == 0:
+                    expression_matrix = pd.DataFrame.from_dict(expression_data, orient='columns')
+                    expression_matrix.index = gene_ids
+
+                    # Append metadata rows
+                    metadata_rows = metadata.reindex(expression_matrix.columns).T
+                    final_matrix = pd.concat([metadata_rows, expression_matrix])
+
+                    # Save chunk to disk
+                    chunk_path = os.path.join(output_dir, f"chunk_{chunk_number}.csv")
+                    final_matrix.to_csv(chunk_path)
+                    print(f"Finished and saved chunk {chunk_number} with {chunk_size} files")
+
+                    # Reset for next chunk
+                    expression_data.clear()
+                    chunk_number += 1
 
             except Exception as e:
                 print(f"Error reading {file_id}: {e}")
                 continue
-    #if files_loaded >= max_files:
-    #   break
 
-# Create DataFrame
-expression_matrix = pd.DataFrame.from_dict(expression_data, orient='columns')
-expression_matrix.index = gene_ids
+# Save remaining files in the last chunk
+if expression_data:
+    expression_matrix = pd.DataFrame.from_dict(expression_data, orient='columns')
+    expression_matrix.index = gene_ids
+    metadata_rows = metadata.reindex(expression_matrix.columns).T
+    final_matrix = pd.concat([metadata_rows, expression_matrix])
+    chunk_path = os.path.join(output_dir, f"chunk_{chunk_number}.csv")
+    final_matrix.to_csv(chunk_path)
+    print(f"Finished and saved final chunk {chunk_number} with {len(expression_data)} files")
 
-# Append metadata rows to the DataFrame
-metadata_rows = metadata.reindex(expression_matrix.columns).T
-final_matrix = pd.concat([metadata_rows, expression_matrix])
-
-# Save to CSV
-final_matrix.to_csv(output_path)
-print(f"Expression matrix saved to: {output_path}")
+print("All files have been processed and saved in chunks.")
