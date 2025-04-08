@@ -91,7 +91,7 @@ def guide(gene_data, covariates, labels=None):
         pyro.sample("beta", dist.Beta(torch.ones(200), alpha_q))
         pyro.sample("means", dist.Normal(torch.zeros(500), 0.1).to_event(1))
 
-    pyro.sample("cov_effects", dist.Normal(torch.zeros(covariates.shape[1]), cov_strength_q))
+    pyro.sample("cov_effects", dist.Normal(torch.zeros(covariates.shape[1]), cov_strength_q).to_event(1))
 
 
 def train(train_path, val_path, test_path, num_epochs=200, batch_size=64):
