@@ -49,7 +49,7 @@ def train(train_path, val_path, test_path, num_epochs=int(os.getenv('NUM_EPOCHS'
     y_test = torch.tensor(cancer_test.values, dtype=torch.long)
 
     # Baseline Model Training (Logistic Regression)
-    baseline_model = LogisticRegression(max_iter=1000)
+    baseline_model = LogisticRegression(max_iter=100)
     baseline_model.fit(expressions_train.T, cancer_train)
     baseline_pred = baseline_model.predict(expressions_test.T)
     baseline_accuracy = accuracy_score(cancer_test, baseline_pred)
