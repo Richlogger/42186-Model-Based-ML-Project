@@ -19,28 +19,34 @@ def load_and_preprocess(path):
     df = pd.read_csv(path, index_col=0, low_memory=False).T
 
     # Extract labels
-    labels = df['Cancer'].map(LABEL_MAPPING)
+    labels = df['Cancer'].map(LABEL_MAPPING).dropna()  # Dropping rows without a valid label
 
-    # Process covariates (keeping only 'Preservation Method')
-    cov_encoder = OneHotEncoder(handle_unknown='ignore')
-    covariates = cov_encoder.fit_transform(df[['Preservation Method']]).toarray()
+    # Extract and process the 'Preservation Method' covariate
+    if 'Preservation Method' in df.columns:
+        cov_encoder = OneHotEncoder(handle_unknown='ignore', sparse_output=False)
+        covariates = cov_encoder.fit_transform(df.loc[labels.index, ['Preservation Method']])
+    else:
+        raise ValueError("Column 'Preservation Method' is missing from the dataset.")
 
-    # Extract gene expressions and convert to float32
-    # Drop all metadata columns, keeping only gene expression data
-    gene_expressions = df.drop(['Cancer', 'Preservation Method'], axis=1, errors='ignore').astype(np.float32)
+    # Extract gene expression data
+    gene_expressions = df.drop(['Cancer', 'Preservation Method', 'Tissue Type', 'Tumor Descriptor', 'Specimen Type'], 
+                               axis=1, errors='ignore')
 
-    return gene_expressions.values, covariates, labels.values
+    # Convert gene expression data to float32, ignore non-numeric columns
+    try:
+        gene_expressions = gene_expressions.apply(pd.to_numeric, errors='coerce')
+    except Exception as e:
+        print("Error during conversion of gene expression data to float:", e)
+    
+    # Drop any columns that couldn't be converted to numeric
+    gene_expressions = gene_expressions.dropna(axis=1)
+    print(f"Gene expression data reduced to {gene_expressions.shape[1]} columns after removing non-numeric data.")
+    
+    # Convert to float32 for training
+    gene_expressions = gene_expressions.astype(np.float32)
 
-    labels = df['Cancer'].map(LABEL_MAPPING)
+    return gene_expressions.values, covariates, labels.loc[gene_expressions.index].values
 
-    # Process covariates
-    cov_encoder = OneHotEncoder(handle_unknown='ignore')
-    covariates = cov_encoder.fit_transform(df[COVARIATES]).toarray()
-
-    # Extract gene expressions and convert to float32
-    gene_expressions = df.drop(['Cancer'] + COVARIATES, axis=1).astype(np.float32)
-
-    return gene_expressions.values, covariates, labels.values
 
 
 @config_enumerate
