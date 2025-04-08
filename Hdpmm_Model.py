@@ -17,6 +17,18 @@ COVARIATES = ['Tissue Type', 'Tumor Descriptor', 'Specimen Type', 'Preservation 
 
 def load_and_preprocess(path):
     df = pd.read_csv(path, index_col=0, low_memory=False).T
+
+    # Extract labels
+    labels = df['Cancer'].map(LABEL_MAPPING)
+
+    # Process covariates
+    cov_encoder = OneHotEncoder(handle_unknown='ignore')
+    covariates = cov_encoder.fit_transform(df[COVARIATES]).toarray()
+
+    # Extract gene expressions and convert to float32
+    gene_expressions = df.drop(['Cancer'] + COVARIATES, axis=1).astype(np.float32)
+
+    return gene_expressions.values, covariates, labels.values
     labels = df['Cancer'].map(LABEL_MAPPING)
 
     # Process covariates
@@ -52,6 +64,7 @@ def model(gene_data, covariates, labels=None):
         assignment = pyro.sample("assignment", dist.Categorical(weights))
 
         # Observation model
+        cov_contribution = cov_contribution.unsqueeze(-1).expand(-1, cluster_means.size(1))
         pyro.sample("obs", dist.Normal(cluster_means[assignment] + cov_contribution, 0.1).to_event(1), 
                   obs=gene_data)
 
@@ -74,16 +87,23 @@ def guide(gene_data, covariates, labels=None):
 
 
 def train(train_path, val_path, test_path, num_epochs=200, batch_size=64):
+    print('Starting training process...')
     # Load and preprocess
     X_train, cov_train, y_train = load_and_preprocess(train_path)
+    print(f'Loaded training data with {X_train.shape[0]} samples and {X_train.shape[1]} features')
     X_val, cov_val, y_val = load_and_preprocess(val_path)
+    print(f'Loaded validation data with {X_val.shape[0]} samples and {X_val.shape[1]} features')
     X_test, cov_test, y_test = load_and_preprocess(test_path)
+    print(f'Loaded test data with {X_test.shape[0]} samples and {X_test.shape[1]} features')
 
     # Dimensionality reduction
     pca = IncrementalPCA(n_components=500)
     X_train = pca.fit_transform(X_train)
+    print('PCA transformation applied to training data')
     X_val = pca.transform(X_val)
+    print('PCA transformation applied to validation data')
     X_test = pca.transform(X_test)
+    print('PCA transformation applied to test data')
 
     # Convert to tensors
     X_train = torch.tensor(X_train, dtype=torch.float32)
@@ -96,11 +116,13 @@ def train(train_path, val_path, test_path, num_epochs=200, batch_size=64):
 
     # Initialize model
     pyro.clear_param_store()
+    print('Initializing the model...')
     optimizer = Adam({"lr": 0.001})
     svi = SVI(model, guide, optimizer, loss=TraceEnum_ELBO(max_plate_nesting=1))
 
     # Training loop
     for epoch in range(num_epochs):
+        print(f'Starting epoch {epoch+1}/{num_epochs}')
         total_loss = 0
         for x_batch, cov_batch, y_batch in loader:
             loss = svi.step(x_batch, cov_batch, y_batch)
