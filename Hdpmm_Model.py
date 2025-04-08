@@ -5,116 +5,151 @@ import torch
 import torch.nn as nn
 import pyro
 import pyro.distributions as dist
-from pyro.infer import SVI, Trace_ELBO
+from pyro.infer import SVI, TraceEnum_ELBO, config_enumerate
 from pyro.optim import Adam
-from sklearn.metrics import accuracy_score
-from sklearn.linear_model import LogisticRegression
-
+from sklearn.decomposition import IncrementalPCA
+from sklearn.preprocessing import OneHotEncoder
+from torch.utils.data import TensorDataset, DataLoader
 
 LABEL_MAPPING = {'AML': 0, 'ALL': 1, 'Normal': 2}
+COVARIATES = ['Tissue Type', 'Tumor Descriptor', 'Specimen Type', 'Preservation Method']
 
+def load_and_preprocess(path):
+    df = pd.read_csv(path, index_col=0).T
+    labels = df['Cancer'].map(LABEL_MAPPING)
+    
+    # Process covariates
+    cov_encoder = OneHotEncoder(handle_unknown='ignore')
+    covariates = cov_encoder.fit_transform(df[COVARIATES]).toarray()
+    
+    # Process gene expressions
+    genes = df.drop(['Cancer'] + COVARIATES, axis=1)
+    genes = genes.apply(pd.to_numeric, errors='coerce').fillna(0)
+    
+    return genes.values, covariates, labels.values
 
-def load_data(train_path, val_path, test_path):
-    train_data = pd.read_csv(train_path, index_col=0, low_memory=False)
-    val_data = pd.read_csv(val_path, index_col=0, low_memory=False)
-    test_data = pd.read_csv(test_path, index_col=0, low_memory=False)
+class GeneEncoder(nn.Module):
+    def __init__(self, input_dim, latent_dim=128):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, 512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(512, latent_dim)
+        )
+    
+    def forward(self, x):
+        return self.net(x)
 
-    # Extract metadata
-    cancer_train = train_data.loc['Cancer'].map(LABEL_MAPPING)
-    cancer_val = val_data.loc['Cancer'].map(LABEL_MAPPING)
-    cancer_test = test_data.loc['Cancer'].map(LABEL_MAPPING)
+@config_enumerate
+def model(gene_data, covariates, labels=None):
+    pyro.module("encoder", GeneEncoder(gene_data.shape[1], 128))
+    
+    # Hyperpriors
+    alpha = pyro.sample("alpha", dist.Gamma(1, 1))
+    cov_strength = pyro.sample("cov_strength", dist.HalfNormal(1))
+    
+    # Covariate hierarchy
+    with pyro.plate("covariates", covariates.shape[1]):
+        cov_effects = pyro.sample("cov_effects", dist.Normal(0, cov_strength))
+    
+    # HDPMM components
+    with pyro.plate("components", 100):
+        stick_breaking = pyro.sample("beta", dist.Beta(1, alpha))
+        cluster_means = pyro.sample("means", dist.Normal(0, 1).expand([128]).to_event(1))
+    
+    # Data processing
+    encoded_genes = pyro.module("encoder").net(gene_data)
+    cov_contribution = torch.mm(covariates, cov_effects.unsqueeze(-1)).squeeze()
+    
+    with pyro.plate("data", gene_data.shape[0]):
+        # Cluster assignment
+        weights = stick_breaking * torch.cumprod(1 - stick_breaking, dim=0)
+        assignment = pyro.sample("assignment", dist.Categorical(weights))
+        
+        # Observation model
+        latent_rep = encoded_genes + cov_contribution
+        pyro.sample("obs", dist.Normal(cluster_means[assignment], 0.1).to_event(1), 
+                  obs=latent_rep)
+        
+        # Classification
+        if labels is not None:
+            with pyro.poutine.scale(scale=0.1):
+                class_probs = pyro.sample("class_probs", 
+                                        dist.Dirichlet(torch.ones(3)))
+                pyro.sample("label", dist.Categorical(class_probs[assignment]), 
+                          obs=labels)
 
-    # Remove metadata rows
-    expressions_train = train_data.drop(['Cancer', 'Tissue Type', 'Tumor Descriptor', 'Specimen Type', 'Preservation Method'], axis=0, errors='ignore')
-    expressions_val = val_data.drop(['Cancer', 'Tissue Type', 'Tumor Descriptor', 'Specimen Type', 'Preservation Method'], axis=0, errors='ignore')
-    expressions_test = test_data.drop(['Cancer', 'Tissue Type', 'Tumor Descriptor', 'Specimen Type', 'Preservation Method'], axis=0, errors='ignore')
+def guide(gene_data, covariates, labels=None):
+    # Amortized cluster assignment
+    encoded = GeneEncoder(gene_data.shape[1], 128)(gene_data)
+    cov_effect = pyro.param("cov_bias", torch.zeros(covariates.shape[1]))
+    logits = torch.mm(covariates, cov_effect.unsqueeze(-1)).squeeze() + encoded.mean(-1)
+    
+    # Variational parameters
+    alpha_q = pyro.param("alpha_q", torch.tensor(1.0), constraint=dist.constraints.positive)
+    cov_strength_q = pyro.param("cov_strength_q", torch.tensor(1.0), 
+                              constraint=dist.constraints.positive)
+    
+    pyro.sample("alpha", dist.Delta(alpha_q))
+    pyro.sample("cov_strength", dist.Delta(cov_strength_q))
+    
+    with pyro.plate("components", 100):
+        pyro.sample("beta", dist.Beta(torch.ones(100), alpha_q))
+        pyro.sample("means", dist.Normal(torch.zeros(128), 0.1).to_event(1))
+    
+    pyro.sample("cov_effects", dist.Normal(torch.zeros(covariates.shape[1]), cov_strength_q))
 
-    # Convert expressions to numeric, setting errors='coerce' to handle non-numeric data
-    expressions_train = expressions_train.apply(pd.to_numeric, errors='coerce').fillna(0)
-    expressions_val = expressions_val.apply(pd.to_numeric, errors='coerce').fillna(0)
-    expressions_test = expressions_test.apply(pd.to_numeric, errors='coerce').fillna(0)
-
-    return expressions_train, expressions_val, expressions_test, cancer_train, cancer_val, cancer_test
-
-
-def train(train_path, val_path, test_path, num_epochs=int(os.getenv('NUM_EPOCHS', 100)), lr=0.001):
-    expressions_train, expressions_val, expressions_test, cancer_train, cancer_val, cancer_test = load_data(train_path, val_path, test_path)
-
-    # Convert data to PyTorch tensors
-    X_train = torch.tensor(expressions_train.values.T, dtype=torch.float32)
-    X_val = torch.tensor(expressions_val.values.T, dtype=torch.float32)
-    X_test = torch.tensor(expressions_test.values.T, dtype=torch.float32)
-    y_train = torch.tensor(cancer_train.values, dtype=torch.long)
-    y_val = torch.tensor(cancer_val.values, dtype=torch.long)
-    y_test = torch.tensor(cancer_test.values, dtype=torch.long)
-
-    # Baseline Model Training (Logistic Regression)
-    baseline_model = LogisticRegression(max_iter=100)
-    baseline_model.fit(expressions_train.T, cancer_train)
-    baseline_pred = baseline_model.predict(expressions_test.T)
-    baseline_accuracy = accuracy_score(cancer_test, baseline_pred)
-    print(f"Baseline Model Accuracy: {baseline_accuracy * 100:.2f}%")
-
-    num_clusters = 300  # Increased number of clusters for better modeling of complex data
-    num_genes = X_train.shape[1]
-
-    def stick_breaking(v):
-        v_cumprod = torch.cumprod(1 - v, dim=0)
-        weights = torch.cat([v[0:1], v[1:] * v_cumprod[:-1]])
-        return weights
-
-    def model(X):
-        alpha = pyro.sample("alpha", dist.Gamma(1.0, 1.0))
-        with pyro.plate("clusters", num_clusters):
-            v = pyro.sample("v", dist.Beta(torch.ones(num_clusters), alpha))
-            cluster_means = pyro.sample("cluster_means", dist.Normal(0.0, 1.0).expand([num_genes]).to_event(1))
-
-        theta = stick_breaking(v)
-
-        with pyro.plate("data", X.shape[0]):
-            assignment = pyro.sample("assignment", dist.Categorical(theta))
-            pyro.sample("obs", dist.Normal(cluster_means[assignment], 0.1).to_event(1), obs=X)
-
-    def guide(X):
-        alpha_q = pyro.param("alpha_q", torch.tensor(1.0), constraint=dist.constraints.positive)
-        v_q = pyro.param("v_q", torch.ones(num_clusters), constraint=dist.constraints.unit_interval)
-        from sklearn.cluster import KMeans
-
-        # Initialize cluster_means_q using K-Means
-        kmeans = KMeans(n_clusters=num_clusters, random_state=0).fit(X.detach().numpy())
-        cluster_means_init = torch.tensor(kmeans.cluster_centers_, dtype=torch.float32)
-        cluster_means_q = pyro.param("cluster_means_q", cluster_means_init)
-
-        pyro.sample("alpha", dist.Gamma(alpha_q, 1.0))
-        with pyro.plate("clusters", num_clusters):
-            pyro.sample("v", dist.Beta(v_q, torch.ones(num_clusters)))
-            pyro.sample("cluster_means", dist.Normal(cluster_means_q, 0.1).to_event(1))
-
-        # Guide for assignment
-        assignment_logits = pyro.param("assignment_logits", torch.randn(X.shape[0], num_clusters))
-        with pyro.plate("data", X.shape[0]):
-            pyro.sample("assignment", dist.Categorical(logits=assignment_logits))
-
+def train(train_path, val_path, test_path, num_epochs=200, batch_size=64):
+    # Load and preprocess
+    X_train, cov_train, y_train = load_and_preprocess(train_path)
+    X_val, cov_val, y_val = load_and_preprocess(val_path)
+    X_test, cov_test, y_test = load_and_preprocess(test_path)
+    
+    # Dimensionality reduction
+    pca = IncrementalPCA(n_components=500)
+    X_train = pca.fit_transform(X_train)
+    X_val = pca.transform(X_val)
+    X_test = pca.transform(X_test)
+    
+    # Convert to tensors
+    X_train = torch.tensor(X_train, dtype=torch.float32)
+    cov_train = torch.tensor(cov_train, dtype=torch.float32)
+    y_train = torch.tensor(y_train, dtype=torch.long)
+    
+    # Dataset and loader
+    dataset = TensorDataset(X_train, cov_train, y_train)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    
+    # Initialize model
     pyro.clear_param_store()
-
-    optimizer = Adam({"lr": lr})
-    svi = SVI(model, guide, optimizer, loss=Trace_ELBO())
-
+    optimizer = Adam({"lr": 0.001})
+    svi = SVI(model, guide, optimizer, loss=TraceEnum_ELBO(max_plate_nesting=1))
+    
+    # Training loop
     for epoch in range(num_epochs):
-        loss = svi.step(X_train)
+        total_loss = 0
+        for x_batch, cov_batch, y_batch in loader:
+            loss = svi.step(x_batch, cov_batch, y_batch)
+            total_loss += loss / len(x_batch)
+            
         if epoch % 10 == 0:
-            print(f"Epoch {epoch} - Loss: {loss}")
-
-    print("Training complete.")
-
-    val_loss = svi.evaluate_loss(X_val)
-    print(f"Validation Loss: {val_loss}")
-
+            print(f"Epoch {epoch} | Loss: {total_loss:.2f}")
+            
+    # Evaluation
+    def evaluate(X, cov, y):
+        predictive = pyro.infer.Predictive(model, guide=guide, num_samples=100)
+        samples = predictive(X, cov, None)
+        pred_labels = samples["label"].mode(0).values
+        return accuracy_score(y.numpy(), pred_labels.numpy())
+    
+    print(f"\nValidation Accuracy: {evaluate(X_val, cov_val, y_val):.2%}")
+    print(f"Test Accuracy: {evaluate(X_test, cov_test, y_test):.2%}")
 
 if __name__ == "__main__":
     train_path = "/work3/s214806/working_chunk_train.csv"
     val_path = "/work3/s214806/working_chunk_val.csv"
     test_path = "/work3/s214806/working_chunk_test.csv"
-
+    
     train(train_path, val_path, test_path)
-
