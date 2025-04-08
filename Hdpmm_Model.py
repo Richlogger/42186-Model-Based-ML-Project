@@ -44,7 +44,8 @@ class GeneEncoder(nn.Module):
 
 @config_enumerate
 def model(gene_data, covariates, labels=None):
-    pyro.module("encoder", GeneEncoder(gene_data.shape[1], 128))
+    encoder = pyro.module("encoder")
+    encoded_genes = encoder(gene_data)
     
     # Hyperpriors
     alpha = pyro.sample("alpha", dist.Gamma(1, 1))
@@ -83,7 +84,8 @@ def model(gene_data, covariates, labels=None):
 
 def guide(gene_data, covariates, labels=None):
     # Amortized cluster assignment
-    encoded = GeneEncoder(gene_data.shape[1], 128)(gene_data)
+    encoder = pyro.module("encoder")
+    encoded = encoder(gene_data)
     cov_effect = pyro.param("cov_bias", torch.zeros(covariates.shape[1]))
     logits = torch.mm(covariates, cov_effect.unsqueeze(-1)).squeeze() + encoded.mean(-1)
     
@@ -113,6 +115,9 @@ def train(train_path, val_path, test_path, num_epochs=200, batch_size=64):
     X_val = pca.transform(X_val)
     X_test = pca.transform(X_test)
     
+    encoder = GeneEncoder(input_dim=500, latent_dim=128)
+    pyro.module("encoder", encoder)  # Register once
+
     # Convert to tensors
     X_train = torch.tensor(X_train, dtype=torch.float32)
     cov_train = torch.tensor(cov_train, dtype=torch.float32)
