@@ -12,7 +12,7 @@ from sklearn.preprocessing import OneHotEncoder
 from torch.utils.data import TensorDataset, DataLoader
 
 LABEL_MAPPING = {'AML': 0, 'ALL': 1, 'Normal': 2}
-COVARIATES = ['Tissue Type', 'Tumor Descriptor', 'Specimen Type', 'Preservation Method']
+COVARIATES = ['Preservation Method']
 
 
 def load_and_preprocess(path):
@@ -21,14 +21,16 @@ def load_and_preprocess(path):
     # Extract labels
     labels = df['Cancer'].map(LABEL_MAPPING)
 
-    # Process covariates
+    # Process covariates (keeping only 'Preservation Method')
     cov_encoder = OneHotEncoder(handle_unknown='ignore')
-    covariates = cov_encoder.fit_transform(df[COVARIATES]).toarray()
+    covariates = cov_encoder.fit_transform(df[['Preservation Method']]).toarray()
 
     # Extract gene expressions and convert to float32
-    gene_expressions = df.drop(['Cancer'] + COVARIATES, axis=1).astype(np.float32)
+    # Drop all metadata columns, keeping only gene expression data
+    gene_expressions = df.drop(['Cancer', 'Preservation Method'], axis=1, errors='ignore').astype(np.float32)
 
     return gene_expressions.values, covariates, labels.values
+
     labels = df['Cancer'].map(LABEL_MAPPING)
 
     # Process covariates
@@ -49,7 +51,7 @@ def model(gene_data, covariates, labels=None):
 
     # Covariate hierarchy
     with pyro.plate("covariates", covariates.shape[1]):
-        cov_effects = pyro.sample("cov_effects", dist.Normal(0, cov_strength))
+        cov_effects = pyro.sample("cov_effects", dist.Normal(0, cov_strength).expand([covariates.shape[1]]).to_event(1))
 
     # HDPMM components
     with pyro.plate("components", 200):  # Increased number of clusters for better separation
