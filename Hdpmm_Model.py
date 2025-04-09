@@ -107,14 +107,12 @@ def train(train_path, val_path, test_path, num_epochs=200, batch_size=64, evalua
 
     # Training loop
     for epoch in range(num_epochs):
-        print(f'Starting epoch {epoch+1}/{num_epochs}')
         total_loss = 0
         for x_batch, y_batch in loader:
             loss = svi.step(x_batch, y_batch)
             total_loss += loss / len(x_batch)
 
-        if epoch % 10 == 0:
-            print(f"Epoch {epoch} | Loss: {total_loss:.2f}")
+        print(f"Epoch {epoch} | Loss: {total_loss:.2f}")
 
 
 def evaluate(model, test_data, test_labels):
