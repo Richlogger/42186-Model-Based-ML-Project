@@ -1,19 +1,9 @@
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import classification_report, confusion_matrix
 from sklearn.preprocessing import StandardScaler
-import pandas as pd
-import os
-
-
-def load_data(val_data_path, val_labels_path, test_data_path, test_labels_path):
-    """
-    Load validation and test datasets from CSV files.
-    """
-    val_data = pd.read_csv(val_data_path, header=None)
-    val_labels = pd.read_csv(val_labels_path, header=None).squeeze()
-    test_data = pd.read_csv(test_data_path, header=None)
-    test_labels = pd.read_csv(test_labels_path, header=None).squeeze()
-    return val_data, val_labels, test_data, test_labels
+import matplotlib.pyplot as plt
+import numpy as np
+from Hdpmm_Model import load_and_preprocess
 
 
 def standardize_data(train_data, test_data):
@@ -48,8 +38,6 @@ def evaluate_model(clf, test_data, test_labels, target_names):
     print("\nClassification Report:")
     print(class_report)
 
-import matplotlib.pyplot as plt
-import numpy as np
 
 def plot_feature_importance(clf, feature_names=None, top_n=20):
     """
@@ -74,29 +62,24 @@ def plot_feature_importance(clf, feature_names=None, top_n=20):
 
 
 def main():
-    # Set working directory
-    os.chdir('/home/richlogger/42186 Model-based machine learning/Final Project Git/42186-Model-Based-ML-Project')
-
     # File paths
-    val_data_path = "small_val_data.csv"
-    val_labels_path = "small_val_labels.csv"
-    test_data_path = "small_test_data.csv"
-    test_labels_path = "small_test_labels.csv"
+    train_path = "/work3/s214806/working_chunk_train.csv"
+    test_path = "/work3/s214806/working_chunk_test.csv"
 
-    # Load datasets
-    val_data, val_labels, test_data, test_labels = load_data(
-        val_data_path, val_labels_path, test_data_path, test_labels_path
-    )
+    # Load datasets using load_and_preprocess
+    train_data, train_labels = load_and_preprocess(train_path)
+    test_data, test_labels = load_and_preprocess(test_path)
 
     # Standardize datasets
-    val_data_scaled, test_data_scaled = standardize_data(val_data, test_data)
+    train_data_scaled, test_data_scaled = standardize_data(train_data, test_data)
 
     # Train logistic regression model
-    clf = train_logistic_regression(val_data_scaled, val_labels)
+    clf = train_logistic_regression(train_data_scaled, train_labels)
 
     # Evaluate the model
     evaluate_model(clf, test_data_scaled, test_labels, target_names=["AML", "ALL", "Normal"])
 
+    # Plot feature importance
     plot_feature_importance(clf, top_n=20)
 
 
