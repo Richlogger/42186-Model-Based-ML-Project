@@ -58,7 +58,7 @@ def plot_feature_importance(clf, feature_names=None, top_n=20):
     plt.barh(top_features, top_coef, color="skyblue")
     plt.xlabel("Feature Importance (Absolute Coefficient)")
     plt.title(f"Top {top_n} Most Important Features")
-    plt.show()
+    plt.savefig("feature_importance.png")
 
 
 def main():
