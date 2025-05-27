@@ -85,16 +85,20 @@ def plot_all_genes_from_AW(gene_importance, gene_names=None):
     plt.title("Feature Importance for All Genes")
     plt.show()
 
-# Example usage
-W = pyro.param("w_loc").detach().cpu().numpy()  # Shape: [latent_dim, n_genes]
-A = pyro.param("A").detach().cpu().numpy()      # Shape: [n_classes, latent_dim]
-top_n = 20
-gene_importance = np.linalg.norm(A @ W, axis=0)  # Compute importance for all genes
+
+'''
+if __name__ == "__main__":
+    W = pyro.param("w_loc").detach().cpu().numpy()  # Shape: [latent_dim, n_genes]
+    A = pyro.param("A").detach().cpu().numpy()      # Shape: [n_classes, latent_dim]
+    top_n = 20
+    gene_importance = np.linalg.norm(A @ W, axis=0)  # Compute importance for all genes
 
 
-# Compute feature importance
-top_indices, top_importance = compute_feature_importance_from_AW(W, A, top_n=top_n)
+    # Compute feature importance
+    top_indices, top_importance = compute_feature_importance_from_AW(W, A, top_n=top_n)
 
-# Plot the top genes
-plot_top_genes_from_AW(top_indices, top_importance, top_n=top_n)
-plot_all_genes_from_AW(gene_importance)
+    # Plot the top genes
+    plot_top_genes_from_AW(top_indices, top_importance, top_n=top_n)
+    plot_all_genes_from_AW(gene_importance)
+
+'''
