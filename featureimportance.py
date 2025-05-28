@@ -53,7 +53,7 @@ def compute_feature_importance_from_AW(W, A, alpha_mean=None, top_n=20):
     top_indices = np.argsort(gene_importance)[-top_n:][::-1]  # Indices of top N genes in descending order
     top_importance = gene_importance[top_indices]
 
-    return top_indices, top_importance
+    return gene_importance, top_indices, top_importance
 
 
 def plot_top_genes_from_AW(top_indices, top_importance, top_n=20, gene_names=None):
