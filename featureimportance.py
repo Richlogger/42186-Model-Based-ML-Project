@@ -21,12 +21,33 @@ import time
 
 
 
-def compute_feature_importance_from_AW(W, A, top_n=20):
-    # Compute the interaction between A and W
-    AW = A @ W  # Shape: [n_classes, n_genes]
+def compute_feature_importance_from_AW(W, A, alpha_mean=None, top_n=20):
+    """
+    Compute feature importance based on the interaction between A and W.
+    If alpha_mean is provided, it scales W using ARD weights.
+
+    Parameters:
+    - W: numpy array, loading matrix (latent_dim x n_genes).
+    - A: numpy array, classification weights (n_classes x latent_dim).
+    - alpha_mean: numpy array or None, ARD precision values (latent_dim). Default is None.
+    - top_n: int, number of top features to return.
+
+    Returns:
+    - top_indices: indices of the top N most important genes.
+    - top_importance: importance values for the top N genes.
+    """
+    if alpha_mean is not None:
+        # Scale W by the ARD precision (alpha_mean)
+        W_scaled = W / np.sqrt(alpha_mean[:, None])  # Adjust W using ARD weights
+    else:
+        # Use W as-is if alpha_mean is not provided
+        W_scaled = W
+
+    # Compute the interaction between A and scaled W
+    AW_scaled = A @ W_scaled  # Shape: [n_classes, n_genes]
 
     # Compute gene importance as the L2 norm across classes
-    gene_importance = np.linalg.norm(AW, axis=0)  # Shape: [n_genes]
+    gene_importance = np.linalg.norm(AW_scaled, axis=0)  # Shape: [n_genes]
 
     # Sort genes by importance and select the top N
     top_indices = np.argsort(gene_importance)[-top_n:][::-1]  # Indices of top N genes in descending order
